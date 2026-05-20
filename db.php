@@ -11,6 +11,26 @@ if (PHP_SAPI !== 'cli' && !headers_sent()) {
     header('Referrer-Policy: same-origin');
 }
 
+if (file_exists(dirname(__FILE__) . '/config.php')) {
+    require dirname(__FILE__) . '/config.php';
+}
+
+if (!isset($AIWEB_STORAGE)) {
+    $AIWEB_STORAGE = 'file';
+}
+if (!isset($AIWEB_DB_HOST)) {
+    $AIWEB_DB_HOST = 'localhost';
+}
+if (!isset($AIWEB_DB_NAME)) {
+    $AIWEB_DB_NAME = 'aiweb2';
+}
+if (!isset($AIWEB_DB_USER)) {
+    $AIWEB_DB_USER = 'aiweb2_user';
+}
+if (!isset($AIWEB_DB_PASS)) {
+    $AIWEB_DB_PASS = 'wjsansrk';
+}
+
 if (!defined('PASSWORD_BCRYPT')) {
     define('PASSWORD_BCRYPT', 1);
 }
@@ -188,6 +208,44 @@ function json_write($name, $data) {
     }
 }
 
+function storage_is_mysql() {
+    global $AIWEB_STORAGE;
+
+    return strtolower((string) $AIWEB_STORAGE) === 'mysql';
+}
+
+function db_conn() {
+    static $db = null;
+
+    if ($db !== null) {
+        return $db;
+    }
+
+    global $AIWEB_DB_HOST, $AIWEB_DB_NAME, $AIWEB_DB_USER, $AIWEB_DB_PASS;
+
+    if (!class_exists('PDO')) {
+        http_response_code(500);
+        die('PDO 확장이 필요합니다.');
+    }
+
+    try {
+        $db = new PDO(
+            'mysql:host=' . $AIWEB_DB_HOST . ';dbname=' . $AIWEB_DB_NAME . ';charset=utf8mb4',
+            $AIWEB_DB_USER,
+            $AIWEB_DB_PASS,
+            array(
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            )
+        );
+    } catch (PDOException $e) {
+        http_response_code(500);
+        die('DB 연결 실패. setup.sql 적용과 config.php 설정을 확인하세요.');
+    }
+
+    return $db;
+}
+
 function seed_users() {
     $hash = password_hash('wjsansrk', PASSWORD_BCRYPT);
     $rows = array(
@@ -232,10 +290,66 @@ function seed_users() {
 }
 
 function all_users() {
+    if (storage_is_mysql()) {
+        db_seed_users_if_empty();
+        return db_conn()->query('
+            SELECT id, username, email, password, ip_address, room_name, room_number, is_admin, created_at
+            FROM users
+            ORDER BY username ASC
+        ')->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     return json_read('users', seed_users());
 }
 
 function save_users($users) {
+    if (storage_is_mysql()) {
+        $db = db_conn();
+        $db->beginTransaction();
+        try {
+            $stmt = $db->prepare('
+                INSERT INTO users (id, username, email, password, ip_address, room_name, room_number, is_admin, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    username = VALUES(username),
+                    email = VALUES(email),
+                    password = VALUES(password),
+                    ip_address = VALUES(ip_address),
+                    room_name = VALUES(room_name),
+                    room_number = VALUES(room_number),
+                    is_admin = VALUES(is_admin),
+                    created_at = VALUES(created_at)
+            ');
+            $ids = array();
+            foreach ($users as $user) {
+                $ids[] = (int) $user['id'];
+                $stmt->execute(array(
+                    $user['id'],
+                    $user['username'],
+                    $user['email'],
+                    $user['password'],
+                    isset($user['ip_address']) ? $user['ip_address'] : null,
+                    isset($user['room_name']) ? $user['room_name'] : null,
+                    isset($user['room_number']) ? $user['room_number'] : null,
+                    isset($user['is_admin']) ? (int) $user['is_admin'] : 0,
+                    isset($user['created_at']) ? $user['created_at'] : now_string(),
+                ));
+            }
+
+            if (count($ids) > 0) {
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $delete = $db->prepare('DELETE FROM users WHERE id NOT IN (' . $placeholders . ')');
+                $delete->execute($ids);
+            }
+
+            $db->commit();
+        } catch (Exception $e) {
+            $db->rollBack();
+            throw $e;
+        }
+        return;
+    }
+
     usort($users, function ($a, $b) {
         return strcmp($a['username'], $b['username']);
     });
@@ -243,11 +357,71 @@ function save_users($users) {
 }
 
 function all_posts() {
+    if (storage_is_mysql()) {
+        return db_conn()->query('
+            SELECT id, user_id, title, content, created_at, updated_at
+            FROM posts
+            ORDER BY created_at DESC, id DESC
+        ')->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     return json_read('posts', array());
 }
 
 function save_posts($posts) {
+    if (storage_is_mysql()) {
+        $db = db_conn();
+        $db->beginTransaction();
+        try {
+            $db->exec('DELETE FROM posts');
+            $stmt = $db->prepare('
+                INSERT INTO posts (id, user_id, title, content, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ');
+            foreach ($posts as $post) {
+                $stmt->execute(array(
+                    $post['id'],
+                    isset($post['user_id']) ? $post['user_id'] : null,
+                    $post['title'],
+                    $post['content'],
+                    isset($post['created_at']) ? $post['created_at'] : now_string(),
+                    isset($post['updated_at']) ? $post['updated_at'] : null,
+                ));
+            }
+            $db->commit();
+        } catch (Exception $e) {
+            $db->rollBack();
+            throw $e;
+        }
+        return;
+    }
+
     json_write('posts', array_values($posts));
+}
+
+function db_seed_users_if_empty() {
+    $count = (int) db_conn()->query('SELECT COUNT(*) FROM users')->fetchColumn();
+    if ($count > 0) {
+        return;
+    }
+
+    $stmt = db_conn()->prepare('
+        INSERT INTO users (id, username, email, password, ip_address, room_name, room_number, is_admin, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ');
+    foreach (seed_users() as $user) {
+        $stmt->execute(array(
+            $user['id'],
+            $user['username'],
+            $user['email'],
+            $user['password'],
+            $user['ip_address'],
+            $user['room_name'],
+            $user['room_number'],
+            $user['is_admin'],
+            $user['created_at'],
+        ));
+    }
 }
 
 function next_id($items) {

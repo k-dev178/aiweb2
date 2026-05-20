@@ -1,6 +1,6 @@
 # AIWeb2 게시판
 
-CentOS 7 기본 Apache/PHP 환경에서 동작하는 파일 저장형 게시판입니다. MySQL/MariaDB 없이 `data/*.json` 파일에 계정과 게시글을 저장합니다.
+CentOS 7 기본 Apache/PHP 환경에서 동작하는 게시판입니다. 기본값은 MySQL/MariaDB 없이 `data/*.json` 파일 저장이고, `config.php` 설정을 바꾸면 MySQL/MariaDB DB 저장으로 전환할 수 있습니다.
 
 ## 환경
 
@@ -8,6 +8,7 @@ CentOS 7 기본 Apache/PHP 환경에서 동작하는 파일 저장형 게시판�
 - Apache httpd
 - PHP 5.4 이상
 - PHP JSON 확장
+- DB 모드 사용 시 MariaDB/MySQL, `php-pdo`, `php-mysql`
 
 CentOS 7 기본 PHP 5.4 문법에 맞춰 작성했습니다.
 
@@ -34,12 +35,51 @@ http://127.0.0.1:8000/index.php
 
 처음 접속하면 `data/users.json`, `data/posts.json`가 자동 생성됩니다.
 
+## DB 적용 명령어
+
+DB 모드를 쓰려면 CentOS 7에서 MariaDB와 PHP MySQL 확장을 설치합니다.
+
+```bash
+sudo yum install -y mariadb-server php-pdo php-mysql
+sudo systemctl enable mariadb
+sudo systemctl start mariadb
+```
+
+프로젝트 폴더에서 DB를 적용합니다.
+
+```bash
+mysql -u root < setup.sql
+```
+
+DB 적용 확인:
+
+```bash
+mysql -u aiweb2_user -pwjsansrk aiweb2 -e "SHOW TABLES;"
+```
+
+`config.php`에서 저장 방식을 `mysql`로 바꿉니다.
+
+```php
+$AIWEB_STORAGE = 'mysql';
+```
+
+이후 웹 페이지에 처음 접속하면 기본 계정이 DB에 자동으로 들어갑니다.
+
 ## CentOS 7 배포
 
 패키지를 설치합니다.
 
 ```bash
 sudo yum install -y httpd php
+```
+
+DB 모드까지 같이 쓸 경우:
+
+```bash
+sudo yum install -y httpd php mariadb-server php-pdo php-mysql
+sudo systemctl enable mariadb
+sudo systemctl start mariadb
+mysql -u root < setup.sql
 ```
 
 프로젝트를 Apache 문서 루트에 배치합니다.
